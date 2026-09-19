@@ -1,9 +1,22 @@
+const { v2: cloudinary } = require("cloudinary");
+const { CloudinaryStorage } = require("multer-storage-cloudinary");
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
 require("dotenv").config();
 const express=require("express"),cors=require("cors"),bcrypt=require("bcryptjs"),jwt=require("jsonwebtoken"),multer=require("multer"),path=require("path"),fs=require("fs");
 const {pool,testConnection}=require("./config/db"); const auth=require("./middleware/auth");
 const app=express(),PORT=Number(process.env.PORT||5000); app.use(cors());app.use(express.json({limit:"2mb"}));app.use(express.urlencoded({extended:true}));
 const uploadDir=path.join(__dirname,"uploads");if(!fs.existsSync(uploadDir))fs.mkdirSync(uploadDir,{recursive:true});app.use("/uploads",express.static(uploadDir));
-const storage=multer.diskStorage({destination:(_r,_f,cb)=>cb(null,uploadDir),filename:(_r,f,cb)=>{const e=path.extname(f.originalname).toLowerCase(),b=path.basename(f.originalname,e).replace(/[^a-zA-Z0-9-_]/g,"-").slice(0,60);cb(null,`${Date.now()}-${b||"image"}${e}`)}});
+const storage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: "annai-bhavan",
+    allowed_formats: ["jpg", "jpeg", "png", "webp"]
+  }
+});
 const imageUpload=multer({storage,limits:{fileSize:8*1024*1024},fileFilter:(_r,f,cb)=>f.mimetype.startsWith("image/")?cb(null,true):cb(new Error("Only image files are allowed"))});
 async function initDb(){const c=await pool.getConnection();try{
 await c.query(`CREATE TABLE IF NOT EXISTS admins(id INT AUTO_INCREMENT PRIMARY KEY,username VARCHAR(100) UNIQUE NOT NULL,password_hash VARCHAR(255) NOT NULL,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
@@ -23,7 +36,7 @@ app.post("/api/menus",auth,async(q,s)=>{try{const x=q.body?.x||q.body; if(!x?.ca
 app.put("/api/menus/:id",auth,async(q,s)=>{try{const x=q.body?.x||q.body;await pool.query("UPDATE menu_items SET category=?,name=?,description=?,price=?,image_url=?,is_active=? WHERE id=?",[x.category,x.name,x.description||null,x.price||null,x.image_url||null,x.is_active?1:0,q.params.id]);s.json({message:"Updated"})}catch(e){s.status(500).json({message:e.message})}});
 app.delete("/api/menus/:id",auth,async(q,s)=>{try{await pool.query("DELETE FROM menu_items WHERE id=?",[q.params.id]);s.json({message:"Deleted"})}catch(e){s.status(500).json({message:e.message})}});
 app.get("/api/gallery",async(_q,s)=>{try{const[r]=await pool.query("SELECT * FROM gallery ORDER BY id DESC");s.json(r)}catch(e){s.status(500).json({message:e.message})}});
-app.post("/api/gallery",auth,imageUpload.single("image"),async(q,s)=>{try{if(!q.file)return s.status(400).json({message:"Select an image"});const u="/uploads/"+q.file.filename;const[r]=await pool.query("INSERT INTO gallery(title,event_name,image_url) VALUES(?,?,?)",[q.body.title||"",q.body.event_name||"",u]);s.json({id:r.insertId,image_url:u})}catch(e){s.status(500).json({message:e.message})}});
+app.post("/api/gallery",auth,imageUpload.single("image"),async(q,s)=>{try{if(!q.file)return s.status(400).json({message:"Select an image"});const u=q.file.path;const[r]=await pool.query("INSERT INTO gallery(title,event_name,image_url) VALUES(?,?,?)",[q.body.title||"",q.body.event_name||"",u]);s.json({id:r.insertId,image_url:u})}catch(e){s.status(500).json({message:e.message})}});
 app.delete("/api/gallery/:id",auth,async(q,s)=>{try{const[r]=await pool.query("SELECT image_url FROM gallery WHERE id=?",[q.params.id]);if(r.length&&r[0].image_url.startsWith("/uploads/")){const f=path.join(uploadDir,path.basename(r[0].image_url));if(fs.existsSync(f))fs.unlinkSync(f)}await pool.query("DELETE FROM gallery WHERE id=?",[q.params.id]);s.json({message:"Deleted"})}catch(e){s.status(500).json({message:e.message})}});
 app.get("/api/videos",async(_q,s)=>{try{const[r]=await pool.query("SELECT * FROM videos ORDER BY id DESC");s.json(r)}catch(e){s.status(500).json({message:e.message})}});
 app.post("/api/videos",auth,async(q,s)=>{try{const x=q.body?.x||q.body;if(!x?.title||!x?.youtube_url)return s.status(400).json({message:"Title and YouTube URL are required"});const[r]=await pool.query("INSERT INTO videos(title,event_name,youtube_url) VALUES(?,?,?)",[x.title,x.event_name||"",x.youtube_url]);s.json({id:r.insertId})}catch(e){s.status(500).json({message:e.message})}});
@@ -34,7 +47,27 @@ app.post("/api/offers",auth,imageUpload.single("image"),async(q,s)=>{try{const u
 app.put("/api/offers/:id",auth,async(q,s)=>{try{const{x}=q.body;await pool.query("UPDATE offers SET title=?,description=?,image_url=?,valid_until=?,is_active=? WHERE id=?",[x.title,x.description||"",x.image_url||null,x.valid_until||null,x.is_active?1:0,q.params.id]);s.json({message:"Updated"})}catch(e){s.status(500).json({message:e.message})}});
 app.delete("/api/offers/:id",auth,async(q,s)=>{try{await pool.query("DELETE FROM offers WHERE id=?",[q.params.id]);s.json({message:"Deleted"})}catch(e){s.status(500).json({message:e.message})}});
 app.get("/api/reviews",async(_q,s)=>{try{const[r]=await pool.query("SELECT * FROM reviews ORDER BY id DESC");s.json(r)}catch(e){s.status(500).json({message:e.message})}});
-app.post("/api/reviews",async(q,s)=>{try{const{x}=q.body,r=Number(x?.rating);if(!x?.customer_name||!x?.review_text||r<1||r>5)return s.status(400).json({message:"Name, review and rating 1-5 are required"});await pool.query("INSERT INTO reviews(customer_name,rating,review_text) VALUES(?,?,?)",[x.customer_name,r,x.review_text]);s.json({message:"Review submitted for approval"})}catch(e){s.status(500).json({message:e.message})}});
+app.post("/api/reviews",async(q,s)=>{
+  try{
+    const x=q.body;
+    const r=Number(x?.rating);
+
+    if(!x?.customer_name || !x?.review_text || r<1 || r>5){
+      return s.status(400).json({
+        message:"Name, review and rating 1-5 are required"
+      });
+    }
+
+    await pool.query(
+      "INSERT INTO reviews(customer_name,rating,review_text) VALUES(?,?,?)",
+      [x.customer_name,r,x.review_text]
+    );
+
+    s.json({message:"Review submitted for approval"});
+  }catch(e){
+    s.status(500).json({message:e.message});
+  }
+});
 app.put("/api/reviews/:id/approve",auth,async(q,s)=>{try{await pool.query("UPDATE reviews SET is_approved=1 WHERE id=?",[q.params.id]);s.json({message:"Approved"})}catch(e){s.status(500).json({message:e.message})}});
 app.delete("/api/reviews/:id",auth,async(q,s)=>{try{await pool.query("DELETE FROM reviews WHERE id=?",[q.params.id]);s.json({message:"Deleted"})}catch(e){s.status(500).json({message:e.message})}});
 app.get("/api/enquiries",auth,async(_q,s)=>{try{const[r]=await pool.query("SELECT * FROM enquiries ORDER BY id DESC");s.json(r)}catch(e){s.status(500).json({message:e.message})}});
